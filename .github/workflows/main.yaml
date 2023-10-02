@@ -1,4 +1,4 @@
-name: "main CI"
+name: "main"
 
 on:
   push:
@@ -10,13 +10,12 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  Test:
-
+  CI-CD:
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v3
-    - name: Build
+    - name: Build and Deploy
       run: cargo build --verbose
-    - name: Run tests
+    - name: Test
       run: cargo test --verbose
