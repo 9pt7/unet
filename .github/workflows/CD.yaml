@@ -11,11 +11,11 @@ jobs:
   CD:
     runs-on: ubuntu-latest
     env:
-      UNET_DOMAIN: unet.tech
+      UNET_DEPLOY: prod
 
     steps:
     - uses: actions/checkout@v3
-    - name: Deploy to unet.tech
+    - name: Deploy unet.tech
       run: cargo build --verbose
     - name: Test
       run: cargo test --verbose
