@@ -18,7 +18,7 @@ jobs:
     - name: Deploy to main.staging.unet.tech
       run: cargo build --verbose
       env:
-        UNET_DOMAIN: $main.staging.unet.tech
+        UNET_DOMAIN: main.staging.unet.tech
     - name: Test
       run: cargo test --verbose
     - name: Deploy to unet.tech
