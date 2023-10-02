@@ -16,10 +16,8 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     - name: Check
-      run: cargo check --verbose
+      run: cargo check --verbose --bins --examples --tests
     - name: Build and Deploy to ${{github.head_ref || 'main'}}
       run: cargo build --verbose
-      env:
-        BRANCH_NAME: ${{github.head_ref || 'main'}}
     - name: Test
       run: cargo test --verbose
