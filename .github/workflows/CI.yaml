@@ -10,6 +10,8 @@ env:
 jobs:
   CI:
     runs-on: ubuntu-latest
+    env:
+      UNET_DOMAIN: ${{github.head_ref}}.staging.unet.tech
 
     steps:
     - uses: actions/checkout@v3
@@ -17,12 +19,5 @@ jobs:
       run: cargo check --verbose --bins --examples --tests
     - name: Deploy to ${{github.head_ref}}.staging.unet.tech
       run: cargo build --verbose
-      env:
-        UNET_DOMAIN: ${{github.head_ref}}.staging.unet.tech
     - name: Test
       run: cargo test --verbose
-    - name: Deploy to unet.tech
-      if: github.event_name == 'push'
-      run: cargo build --verbose
-      env:
-        UNET_DOMAIN: unet.tech

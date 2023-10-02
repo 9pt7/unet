@@ -10,18 +10,12 @@ env:
 jobs:
   CD:
     runs-on: ubuntu-latest
+    env:
+      UNET_DOMAIN: unet.tech
 
     steps:
     - uses: actions/checkout@v3
-    - name: Check
-      run: cargo check --verbose --bins --examples --tests
-    - name: Deploy to main.staging.unet.tech
-      run: cargo build --verbose
-      env:
-        UNET_DOMAIN: main.staging.unet.tech
-    - name: Test
-      run: cargo test --verbose
     - name: Deploy to unet.tech
       run: cargo build --verbose
-      env:
-        UNET_DOMAIN: unet.tech
+    - name: Test
+      run: cargo test --verbose
