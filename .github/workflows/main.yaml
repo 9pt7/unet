@@ -10,7 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  CI/CD:
+  CI-CD:
     runs-on: ubuntu-latest
 
     steps:
