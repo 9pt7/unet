@@ -1,4 +1,4 @@
-name: "main integration"
+name: "main CI"
 
 on:
   push:
