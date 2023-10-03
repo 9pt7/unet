@@ -54,6 +54,7 @@ jobs:
   Test:
     needs: Build
     runs-on: ubuntu-latest
+    container: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
     environment: staging
     # We don't want the staging stack being deployed from multiple workflows at
     # the same time
@@ -77,6 +78,7 @@ jobs:
   Deploy:
     needs: Test
     runs-on: ubuntu-latest
+    container: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
     environment: production
     if: github.ref == 'refs/heads/main'
     concurrency:
