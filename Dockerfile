@@ -12,3 +12,6 @@ RUN curl -L https://github.com/aws/aws-sam-cli/releases/download/v1.97.0/aws-sam
 
 # Install Rust
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+# Update the PATH environment variable to include cargo
+ENV PATH="/root/.cargo/bin:${PATH}"
