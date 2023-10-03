@@ -25,14 +25,25 @@ jobs:
       run: cargo check --verbose --bins --examples --tests
     - name: Deploy ${{github.head_ref}}.unet-staging.com
       run: cargo build --verbose
-      environment: staging
+      env:
+        UNET_DEPLOYMENT_STAGE: staging
+        AWS_ACCESS_KEY_ID: ${{ secrets.STAGING_AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.STAGING_AWS_SECRET_ACCESS_KEY }}
     - name: Staging Test
       run: cargo test --verbose
-      environment: staging
+      env:
+        UNET_DEPLOYMENT_STAGE: staging
     - name: Deploy unet.tech
       run: cargo build --verbose
       if: github.ref == 'refs/heads/main'
-      environment: prod
+      env:
+        UNET_DEPLOYMENT_STAGE: prod
+        AWS_ACCESS_KEY_ID: ${{ secrets.PROD_AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.PROD_AWS_SECRET_ACCESS_KEY }}
+    - name: Prod Test
+      run: cargo test --verbose
+      env:
+        UNET_DEPLOYMENT_STAGE: prod
 
     - name: Prod Test
       run: cargo test --verbose
