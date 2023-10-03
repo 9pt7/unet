@@ -5,6 +5,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  DOCKER_IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
   Build:
@@ -38,7 +39,7 @@ jobs:
       id: meta
       with:
         images: |
-          ghcr.io/${{ github.repository }}
+          ${{ env.DOCKER_IMAGE }}
         tags: |
           type=ref,event=branch
     -
@@ -49,15 +50,17 @@ jobs:
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
-        cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache.${{ github.ref_name }}
-        cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache.${{ github.ref_name }},mode=max
+        cache-from: |
+          type=registry,ref=${{ env.DOCKER_IMAGE }}:buildcache.${{ github.ref_name }}
+          type=registry,ref=${{ env.DOCKER_IMAGE }}:buildcache.main
+        cache-to: type=registry,ref=${{ env.DOCKER_IMAGE }}:buildcache.${{ github.ref_name }},mode=max
 
 
   Test:
     needs: Build
     runs-on: ubuntu-latest
-    container: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
-    environment: staging
+    container: ${{ env.DOCKER_IMAGE }}:${{ github.ref_name }}
+    environment: Staging
     # We don't want the staging stack being deployed from multiple workflows at
     # the same time
     concurrency:
@@ -83,8 +86,8 @@ jobs:
   Deploy:
     needs: Test
     runs-on: ubuntu-latest
-    container: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
-    environment: production
+    container: ${{ env.DOCKER_IMAGE }}:${{ github.ref_name }}
+    environment: Production
     if: github.ref == 'refs/heads/main'
     concurrency:
       group: test:${{ github.ref }}
