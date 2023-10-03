@@ -20,3 +20,6 @@ ENV RUSTUP_HOME="/root/.rustup"
 
 # Set the default toolchain
 RUN rustup default 1.72.0
+
+# Install build dependencies
+RUN apt-get install -y build-essential
