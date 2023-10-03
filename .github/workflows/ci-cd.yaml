@@ -49,13 +49,17 @@ jobs:
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
+        cache-from: |
+          type=registry,ref=ghcr.io/${{ github.repository }}:buildcache.${{ github.ref_name }}
+          type=registry,ref=ghcr.io/${{ github.repository }}:buildcache.main
+        cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache.${{ github.ref_name }},mode=max
 
 
   Test:
     needs: Build
     runs-on: ubuntu-latest
     container: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
-    environment: staging
+    environment: Staging
     # We don't want the staging stack being deployed from multiple workflows at
     # the same time
     concurrency:
@@ -82,7 +86,7 @@ jobs:
     needs: Test
     runs-on: ubuntu-latest
     container: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
-    environment: production
+    environment: Production
     if: github.ref == 'refs/heads/main'
     concurrency:
       group: test:${{ github.ref }}
