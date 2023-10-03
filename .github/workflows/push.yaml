@@ -9,6 +9,9 @@ env:
 jobs:
   CI-CD:
     runs-on: ubuntu-latest
+    # Use the 'prod' environment when pushing to the main branch, otherwise use
+    # 'staging'.
+    environemnt: ${{ github.ref == 'refs/heads/main' && 'prod' || 'staging' }}
 
     steps:
     -
@@ -24,20 +27,8 @@ jobs:
       name: Check
       run: cargo check --verbose --bins --examples --tests
     -
-      name: Staging Deploy
+      name: Deploy to ${{ github.ref == 'refs/heads/main' && 'unet.tech' || "${{github.ref_name }}.unet-staging.com" }}
       run: cargo run deploy
-      environment: staging
     -
-      name: Staging Test
+      name: Test
       run: cargo test --verbose
-      environment: staging
-    -
-      name: Prod Deploy
-      run: cargo run deploy
-      if: github.ref == 'refs/heads/main'
-      environment: prod
-    -
-      name: Prod Test
-      run: cargo test --verbose
-      if: github.ref == 'refs/heads/main'
-      environment: prod
