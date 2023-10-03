@@ -7,11 +7,13 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  CI-CD:
+  Test:
     runs-on: ubuntu-latest
-    # Use the 'prod' environment when pushing to the main branch, otherwise use
-    # 'staging'.
-    environemnt: ${{ github.ref == 'refs/heads/main' && 'prod' || 'staging' }}
+    environemnt: staging
+    # We don't want the staging stack being deployed from multiple workflows at
+    # the same time
+    concurrency:
+      group: "test:${{ github.ref }}"
 
     steps:
     -
@@ -27,7 +29,32 @@ jobs:
       name: Check
       run: cargo check --verbose --bins --examples --tests
     -
-      name: Deploy to ${{ github.ref == 'refs/heads/main' && 'unet.tech' || "${{github.ref_name }}.unet-staging.com" }}
+      name: Deploy to "${{ github.ref_name }}.unet-staging.com"
+      run: cargo run deploy
+    -
+      name: Test
+      run: cargo test --verbose
+
+  Deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    needs: Test
+    if: github.ref == 'refs/heads/main'
+    concurrency:
+      group: deploy
+
+    steps:
+    -
+      name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+    -
+      name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    -
+      name: Checkout
+      uses: actions/checkout@v3
+    -
+      name: Deploy to unet.tech
       run: cargo run deploy
     -
       name: Test
