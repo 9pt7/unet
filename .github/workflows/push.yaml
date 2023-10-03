@@ -29,7 +29,7 @@ jobs:
       name: Check
       run: cargo check --verbose --bins --examples --tests
     -
-      name: Deploy to "${{ github.ref_name }}.unet-staging.com"
+      name: Deploy to ${{ github.ref_name }}.unet-staging.com
       run: cargo run deploy
     -
       name: Test againt staging deployment
