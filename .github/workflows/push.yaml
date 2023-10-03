@@ -17,8 +17,6 @@ jobs:
       uses: docker/setup-buildx-action@v3
     - name: Checkout
       uses: actions/checkout@v3
-    - name: Docker Build
-      uses: docker/build-push-action@v5
     - name: Check
       run: cargo check --verbose --bins --examples --tests
     - name: Deploy ${{github.head_ref}}.unet-staging.com
@@ -42,6 +40,3 @@ jobs:
       run: cargo test --verbose
       env:
         UNET_DEPLOYMENT_STAGE: prod
-
-    - name: Prod Test
-      run: cargo test --verbose
