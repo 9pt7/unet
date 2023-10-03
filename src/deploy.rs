@@ -1,20 +1,21 @@
 use std::env;
 use std::process::Command;
 
-fn main() {
+pub fn deploy() {
     // Get the cargo directory
     let cargo_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
 
     // Run docker build
-    let status = Command::new("docker")
+    let docker_build_ok = Command::new("docker")
         .arg("build")
         .arg("-t")
         .arg("unet")
         .arg(cargo_dir)
         .status()
-        .unwrap();
+        .unwrap()
+        .success();
 
-    if !status.success() {
+    if !docker_build_ok {
         panic!("docker build failed");
     }
 }
