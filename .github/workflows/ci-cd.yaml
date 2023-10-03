@@ -63,6 +63,9 @@ jobs:
 
     steps:
     -
+      name: rustup show
+      run: rustup show
+    -
       name: Checkout
       uses: actions/checkout@v3
     -
