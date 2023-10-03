@@ -7,21 +7,64 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  Test:
+  Build:
     runs-on: ubuntu-latest
-    environment: staging
-    # We don't want the staging stack being deployed from multiple workflows at
-    # the same time
+    permissions:
+      packages: write
     concurrency:
-      group: "test:${{ github.ref }}"
+      group: build:${{ github.ref }}
+      cancel-in-progress: true
 
     steps:
+    -
+      name: Checkout
+      uses: actions/checkout@v3
     -
       name: Set up QEMU
       uses: docker/setup-qemu-action@v3
     -
       name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
+    -
+      name: Login to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    -
+      name: Docker meta
+      uses: docker/metadata-action@v5
+      id: meta
+      with:
+        images: |
+          ghcr.io/${{ github.repository }}
+        tags: |
+          type=ref,event=branch
+    -
+      name: Docker Build and Push
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+
+
+  Test:
+    needs: Build
+    runs-on: ubuntu-latest
+    container: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+    environment: staging
+    # We don't want the staging stack being deployed from multiple workflows at
+    # the same time
+    concurrency:
+      group: test:${{ github.ref }}
+
+    steps:
+    -
+      name: rustup show
+      run: rustup show
     -
       name: Checkout
       uses: actions/checkout@v3
@@ -36,20 +79,15 @@ jobs:
       run: cargo test --verbose
 
   Deploy:
-    runs-on: ubuntu-latest
-    environment: production
     needs: Test
+    runs-on: ubuntu-latest
+    container: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+    environment: production
     if: github.ref == 'refs/heads/main'
     concurrency:
-      group: deploy
+      group: test:${{ github.ref }}
 
     steps:
-    -
-      name: Set up QEMU
-      uses: docker/setup-qemu-action@v3
-    -
-      name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
     -
       name: Checkout
       uses: actions/checkout@v3
