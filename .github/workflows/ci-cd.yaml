@@ -39,7 +39,7 @@ jobs:
       id: meta
       with:
         images: |
-          $DOCKER_IMAGE
+          ${{ env.DOCKER_IMAGE }}
         tags: |
           type=ref,event=branch
     -
@@ -51,15 +51,15 @@ jobs:
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: |
-          type=registry,ref=$DOCKER_IMAGE:buildcache.${{ github.ref_name }}
-          type=registry,ref=$DOCKER_IMAGE:buildcache.main
-        cache-to: type=registry,ref=$DOCKER_IMAGE:buildcache.${{ github.ref_name }},mode=max
+          type=registry,ref=${{ env.DOCKER_IMAGE }}:buildcache.${{ github.ref_name }}
+          type=registry,ref=${{ env.DOCKER_IMAGE }}:buildcache.main
+        cache-to: type=registry,ref=${{ env.DOCKER_IMAGE }}:buildcache.${{ github.ref_name }},mode=max
 
 
   Test:
     needs: Build
     runs-on: ubuntu-latest
-    container: $DOCKER_IMAGE:${{ github.ref_name }}
+    container: ${{ env.DOCKER_IMAGE }}:${{ github.ref_name }}
     environment: Staging
     # We don't want the staging stack being deployed from multiple workflows at
     # the same time
@@ -86,7 +86,7 @@ jobs:
   Deploy:
     needs: Test
     runs-on: ubuntu-latest
-    container: $DOCKER_IMAGE:${{ github.ref_name }}
+    container: ${{ env.DOCKER_IMAGE }}:${{ github.ref_name }}
     environment: Production
     if: github.ref == 'refs/heads/main'
     concurrency:
