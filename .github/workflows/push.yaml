@@ -1,8 +1,7 @@
-name: "CI"
+name: "push"
 
 on:
-  pull_request:
-    branches: [ "main" ]
+  push:
 
 env:
   CARGO_TERM_COLOR: always
@@ -10,7 +9,6 @@ env:
 jobs:
   CI:
     runs-on: ubuntu-latest
-    environment: CI
 
     steps:
     - name: Set up QEMU
@@ -19,9 +17,22 @@ jobs:
       uses: docker/setup-buildx-action@v3
     - name: Checkout
       uses: actions/checkout@v3
+    - name: Build and push
+      uses: docker/build-push-action@v5
+      with:
+        push: true
     - name: Check
       run: cargo check --verbose --bins --examples --tests
     - name: Deploy ${{github.head_ref}}.unet-staging.com
       run: cargo build --verbose
-    - name: Test
+      environment: staging
+    - name: Staging Test
+      run: cargo test --verbose
+      environment: staging
+    - name: Deploy unet.tech
+      run: cargo build --verbose
+      if: github.ref == 'refs/heads/main'
+      environment: prod
+
+    - name: Prod Test
       run: cargo test --verbose
