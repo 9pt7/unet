@@ -9,7 +9,7 @@ env:
 jobs:
   Test:
     runs-on: ubuntu-latest
-    environemnt: staging
+    environment: staging
     # We don't want the staging stack being deployed from multiple workflows at
     # the same time
     concurrency:
@@ -32,7 +32,7 @@ jobs:
       name: Deploy to "${{ github.ref_name }}.unet-staging.com"
       run: cargo run deploy
     -
-      name: Test
+      name: Test againt staging deployment
       run: cargo test --verbose
 
   Deploy:
@@ -57,5 +57,5 @@ jobs:
       name: Deploy to unet.tech
       run: cargo run deploy
     -
-      name: Test
+      name: Test against production deployment
       run: cargo test --verbose
