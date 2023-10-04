@@ -50,8 +50,10 @@ jobs:
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: |
-          type=registry,ref=ghcr.io/${{ github.repository }}:${{ github.ref_name }}
-          type=registry,ref=ghcr.io/${{ github.repository }}:main
+          type=registry,ref=ghcr.io/${{ github.repository }}:buildcache.${{ github.ref_name }}
+          type=registry,ref=ghcr.io/${{ github.repository }}:buildcache.main
+        cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache.${{ github.ref_name }},mode=max
+
 
   Test:
     needs: Build
