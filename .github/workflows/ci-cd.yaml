@@ -67,20 +67,14 @@ jobs:
 
     steps:
     -
-      name: rustup show
-      run: rustup show
-    -
-      name: Checkout
-      uses: actions/checkout@v3
-    -
       name: Check
-      run: cargo check --verbose --bins --examples --tests
+      run: cargo check --manifest-path /home/user/unet/Cargo.toml --verbose --bins --examples --tests
     -
       name: Deploy to ${{ github.ref_name }}.unet-staging.com
-      run: cargo run deploy
+      run: cargo run --manifest-path /home/user/unet/Cargo.toml deploy
     -
       name: Test againt staging deployment
-      run: cargo test --verbose
+      run: cargo test --manifest-path /home/user/unet/Cargo.toml --verbose
 
   Deploy:
     needs: Test
@@ -93,11 +87,8 @@ jobs:
 
     steps:
     -
-      name: Checkout
-      uses: actions/checkout@v3
-    -
       name: Deploy to unet.tech
-      run: cargo run deploy
+      run: cargo run --manifest-path /home/user/unet/Cargo.toml deploy
     -
       name: Test against production deployment
-      run: cargo test --verbose
+      run: cargo test --manifest-path /home/user/unet/Cargo.toml --verbose
