@@ -55,10 +55,10 @@ jobs:
         cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache.${{ github.ref_name }},mode=max
     -
       name: Check
-      run: docker run --rm ghcr.io/${{ github.repository }} cargo check --manifest-path /home/user/unet/Cargo.toml --verbose --bins --examples --tests
+      run: docker run --rm ghcr.io/${{ github.repository }}:${{ github.ref_name }} cargo check --manifest-path /home/user/unet/Cargo.toml --verbose --bins --examples --tests
     -
       name: Deploy to ${{ github.ref_name }}.unet-staging.com
-      run: docker run --rm ghcr.io/${{ github.repository }} cargo run --manifest-path /home/user/unet/Cargo.toml deploy
+      run: docker run --rm ghcr.io/${{ github.repository }}:${{ github.ref_name }} cargo run --manifest-path /home/user/unet/Cargo.toml deploy
     -
       name: Test againt staging deployment
-      run: docker run --rm ghcr.io/${{ github.repository }} cargo test --manifest-path /home/user/unet/Cargo.toml --verbose
+      run: docker run --rm ghcr.io/${{ github.repository }}:${{ github.ref_name }} cargo test --manifest-path /home/user/unet/Cargo.toml --verbose
