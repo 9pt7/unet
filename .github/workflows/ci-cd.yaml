@@ -7,7 +7,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  Build:
+  Main:
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -53,42 +53,12 @@ jobs:
           type=registry,ref=ghcr.io/${{ github.repository }}:buildcache.${{ github.ref_name }}
           type=registry,ref=ghcr.io/${{ github.repository }}:buildcache.main
         cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache.${{ github.ref_name }},mode=max
-
-
-  Test:
-    needs: Build
-    runs-on: ubuntu-latest
-    container: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
-    environment: Staging
-    # We don't want the staging stack being deployed from multiple workflows at
-    # the same time
-    concurrency:
-      group: test:${{ github.ref }}
-
-    steps:
     -
       name: Check
-      run: cargo check --manifest-path /home/user/unet/Cargo.toml --verbose --bins --examples --tests
+      run: docker run --rm ghcr.io/${{ github.repository }} cargo check --manifest-path /home/user/unet/Cargo.toml --verbose --bins --examples --tests
     -
       name: Deploy to ${{ github.ref_name }}.unet-staging.com
-      run: cargo run --manifest-path /home/user/unet/Cargo.toml deploy
+      run: docker run --rm ghcr.io/${{ github.repository }} cargo run --manifest-path /home/user/unet/Cargo.toml deploy
     -
       name: Test againt staging deployment
-      run: cargo test --manifest-path /home/user/unet/Cargo.toml --verbose
-
-  Deploy:
-    needs: Test
-    runs-on: ubuntu-latest
-    container: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
-    environment: Production
-    if: github.ref == 'refs/heads/main'
-    concurrency:
-      group: test:${{ github.ref }}
-
-    steps:
-    -
-      name: Deploy to unet.tech
-      run: cargo run --manifest-path /home/user/unet/Cargo.toml deploy
-    -
-      name: Test against production deployment
-      run: cargo test --manifest-path /home/user/unet/Cargo.toml --verbose
+      run: docker run --rm ghcr.io/${{ github.repository }} cargo test --manifest-path /home/user/unet/Cargo.toml --verbose
