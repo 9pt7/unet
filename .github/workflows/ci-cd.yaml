@@ -42,7 +42,7 @@ jobs:
         tags: |
           type=ref,event=branch
     -
-      name: Docker Build and Push
+      name: Docker Build
       uses: docker/build-push-action@v5
       with:
         context: .
