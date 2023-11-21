@@ -1,8 +1,11 @@
+use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
+
+extern crate web_sys;
 
 #[function_component]
 fn App() -> Html {
-    let counter = use_state(|| 0);
+    let counter = use_state(|| 100);
     let onclick = {
         let counter = counter.clone();
         move |_| {
@@ -19,6 +22,11 @@ fn App() -> Html {
     }
 }
 
-pub fn browser_main() {
+async fn serve() {
+    unet::cloud::serve().await.unwrap();
+}
+
+fn main() {
+    spawn_local(serve());
     yew::Renderer::<App>::new().render();
 }

@@ -1,37 +1,38 @@
+use unet::cloud::{
+    get_api_domain, get_auth_domain, get_root_domain, get_stack_name, User, WebsocketClientMessage,
+    WebsocketClientRequest, WebsocketServerError, WebsocketServerMessage, WebsocketServerResponse,
+};
+
 use {
     serde::{Deserialize, Serialize},
     url::Url,
 };
 
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use {
-    futures_util::{stream::SplitSink, SinkExt, StreamExt},
-    http::Request,
-    std::mem::replace,
-    tokio::{fs::read_to_string, net::TcpStream, select, sync::oneshot},
-    tokio_tungstenite::{
-        connect_async, tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream,
-    },
-};
-
-#[cfg(feature = "aws")]
-use {
-    aws_lambda_events::event::apigw::{
-        ApiGatewayProxyResponse, ApiGatewayV2httpRequest, ApiGatewayV2httpResponse,
-        ApiGatewayWebsocketProxyRequest,
+    aws_lambda_events::{
+        encodings::Body,
+        event::apigw::{
+            ApiGatewayProxyResponse, ApiGatewayV2httpRequest, ApiGatewayV2httpResponse,
+            ApiGatewayWebsocketProxyRequest,
+        },
     },
     aws_sdk_apigatewaymanagement as apigatewaymanagement,
     aws_sdk_apigatewaymanagement::primitives::Blob,
     aws_sdk_cloudformation as cloudformation,
     aws_sdk_cloudformation::types::Stack,
     aws_sdk_cognitoidentityprovider as cognitoidentityprovider,
-    aws_sdk_cognitoidentityprovider::types::{
-        TimeUnitsType, TokenValidityUnitsType, UserPoolClientType,
+    aws_sdk_cognitoidentityprovider::{
+        operation::initiate_auth::InitiateAuthOutput,
+        types::{
+            AuthFlowType, AuthenticationResultType, TimeUnitsType, TokenValidityUnitsType,
+            UserPoolClientType,
+        },
     },
     aws_sdk_dynamodb as dynamodb,
     aws_sdk_dynamodb::{operation::get_item::GetItemOutput, types::AttributeValue},
     aws_sdk_s3 as s3,
     aws_sdk_s3::presigning::{PresignedRequest, PresigningConfig},
+    base64::Engine,
     http::{header::LOCATION, HeaderMap, Method, Uri},
     jsonwebtoken as jwt,
     jsonwebtoken::{
@@ -44,99 +45,12 @@ use {
     std::collections::HashMap,
 };
 
-fn get_env_var_url(env_name: &str, option_env: Option<&'static str>, default: &str) -> Url {
-    Url::parse(match std::env::var(env_name).as_ref() {
-        Ok(value) => value.as_str(),
-        Err(_) => option_env.unwrap_or(default),
-    })
-    .unwrap()
-}
-
-pub fn get_root_domain() -> Url {
-    get_env_var_url(
-        "UNET_ROOT_DOMAIN",
-        option_env!("UNET_ROOT_DOMAIN"),
-        "https://unet.tech",
-    )
-}
-
-pub fn get_api_domain() -> Url {
-    get_env_var_url(
-        "UNET_API_DOMAIN",
-        option_env!("UNET_API_DOMAIN"),
-        "https://api.unet.tech",
-    )
-}
-
-pub fn get_websocket_domain() -> Url {
-    get_env_var_url(
-        "UNET_WEBSOCKET_DOMAIN",
-        option_env!("UNET_WEBSOCKET_DOMAIN"),
-        "wss://wss.api.unet.tech",
-    )
-}
-
-pub fn get_stack_id() -> String {
-    match std::env::var("UNET_STACK_ID") {
-        Ok(stack_id) => stack_id,
-        Err(_) => option_env!("UNET_STACK_ID").unwrap_or("prod").to_string(),
-    }
-}
-
-pub fn get_stack_name() -> String {
-    format!("unet-dev-{}", get_stack_id())
-}
-
-pub fn get_hosted_zone_id() -> String {
-    match std::env::var("UNET_HOSTED_ZONE_ID") {
-        Ok(hosted_zone_id) => hosted_zone_id,
-        Err(_) => option_env!("UNET_HOSTED_ZONE_ID")
-            .unwrap_or("Z05848283TO5CBMZHZTRN")
-            .to_string(),
-    }
-}
-
-pub fn get_auth_domain() -> Url {
-    let auth_domain = match std::env::var("UNET_AUTH_DOMAIN") {
-        Ok(auth_domain) => auth_domain,
-        Err(_) => option_env!("UNET_AUTH_DOMAIN")
-            .unwrap_or("https://auth.unet.tech")
-            .to_string(),
-    };
-
-    Url::parse(auth_domain.as_str()).unwrap()
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(tag = "tag", content = "content")]
-enum WebsocketClientMessage {
-    LoginRequest {},
-    GeneratePresignedUrl { object_path: String },
-}
-
-#[derive(Serialize, Deserialize)]
-struct Credentials {
-    pub id_token: String,
-    pub access_token: String,
-    pub refresh_token: String,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "tag", content = "content")]
-enum WebsocketServerMessage {
-    LoginUrl { url: String },
-    LoginCredentials { credentials: Credentials },
-    PresignedUrl { url: String },
-}
-
-#[cfg(feature = "aws")]
-pub async fn lambda_main() {
+async fn lambda_main() {
     let aws = get_aws().await;
     let service_fn = lambda_runtime::service_fn(|event| handle_lambda_event(&aws, event));
     lambda_runtime::run(service_fn).await.unwrap();
 }
 
-#[cfg(feature = "aws")]
 #[derive(Deserialize)]
 struct Tokens {
     id_token: String,
@@ -146,18 +60,27 @@ struct Tokens {
     refresh_token: String,
 }
 
-#[cfg(feature = "aws")]
-async fn get_tokens_from_authorization_code(aws: &AWS, code: &str) -> Tokens {
-    let client_secret = aws.user_pool_client.client_secret.clone().unwrap();
-    let token_url = get_auth_domain().join("/oauth2/token").unwrap();
-    let callback_url = get_api_domain().join("/auth/callback").unwrap();
+fn get_token_endpoint_url() -> Url {
+    get_auth_domain().join("/oauth2/token").unwrap()
+}
 
+async fn get_tokens_from_authorization_code(aws: &AWS, code: &str) -> Tokens {
     let form = {
         let mut payload = HashMap::new();
         payload.insert("grant_type", "authorization_code".to_string());
         payload.insert("client_id", aws.user_pool_client_id.to_string());
-        payload.insert("client_secret", client_secret);
-        payload.insert("redirect_uri", callback_url.to_string());
+        payload.insert(
+            "client_secret",
+            aws.user_pool_client
+                .client_secret
+                .as_ref()
+                .unwrap()
+                .to_string(),
+        );
+        payload.insert(
+            "redirect_uri",
+            get_api_domain().join("/auth/callback").unwrap().to_string(),
+        );
         payload.insert("code", code.to_string());
         payload
     };
@@ -165,22 +88,18 @@ async fn get_tokens_from_authorization_code(aws: &AWS, code: &str) -> Tokens {
     // Make the POST request to exchange the authorization code for tokens
     let response = aws
         .reqwest
-        .post(token_url.as_str())
+        .post(get_token_endpoint_url().as_str())
         .form(&form)
         .send()
         .await
         .unwrap();
-    let json = response.json::<Value>().await.unwrap();
-
-    // Deserialize the json response into a TokenResponse
-    let tokens = serde_json::from_value::<Tokens>(json).unwrap();
+    let tokens = response.json::<Tokens>().await.unwrap();
 
     assert_eq!(tokens.token_type, "Bearer");
 
     tokens
 }
 
-#[cfg(feature = "aws")]
 fn get_refresh_token_expires_in(aws: &AWS) -> i64 {
     let validity_in_seconds: i64 = match aws
         .user_pool_client
@@ -201,99 +120,214 @@ fn get_refresh_token_expires_in(aws: &AWS) -> i64 {
     validity_in_seconds * aws.user_pool_client.refresh_token_validity as i64
 }
 
-#[cfg(feature = "aws")]
+fn access_token_cookie(access_token: &str, expires_in: i64) -> String {
+    format!(
+        "accessToken={}; Domain={}; HttpOnly; Max-Age={}; Path=/; SameSite=Lax; Secure",
+        access_token,
+        get_api_domain().host_str().unwrap(),
+        expires_in
+    )
+}
+
+fn refresh_token_cookie(aws: &AWS, refresh_token: &str, expires_in: i64) -> String {
+    format!(
+        "refreshToken={}; Domain={}; HttpOnly; Max-Age={}; Path=/auth; SameSite=Lax; Secure",
+        refresh_token,
+        get_api_domain().host_str().unwrap(),
+        expires_in,
+    )
+}
+
+fn redirect_to_root_domain_header_map() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(LOCATION, get_root_domain().as_str().parse().unwrap());
+    headers
+}
+
 fn auth_http_response(
+    aws: &AWS,
     access_token: &str,
     access_token_expires_in: i64,
     refresh_token: &str,
     refresh_token_expires_in: i64,
 ) -> ApiGatewayV2httpResponse {
-    let headers = {
-        let mut headers = HeaderMap::new();
-        headers.insert(LOCATION, get_root_domain().as_str().parse().unwrap());
-        headers
-    };
+    let headers = redirect_to_root_domain_header_map();
 
     let api_domain = get_api_domain();
 
-    let cookie_domain = api_domain.host_str().unwrap();
     let cookies = [
-        format!(
-            "accessToken={}; Domain={}; HttpOnly; Max-Age={}; Path=/; SameSite=Lax; Secure",
-            access_token, cookie_domain, access_token_expires_in
-        ),
-        format!(
-            "refreshToken={}; Domain={}; HttpOnly; Max-Age={}; Path=/auth; SameSite=Lax; Secure",
-            refresh_token, cookie_domain, refresh_token_expires_in,
-        ),
+        access_token_cookie(access_token, access_token_expires_in),
+        refresh_token_cookie(aws, refresh_token, refresh_token_expires_in),
     ]
     .to_vec();
 
     ApiGatewayV2httpResponse {
         status_code: 302,
         headers,
-
         cookies,
         ..Default::default()
     }
 }
 
-#[cfg(feature = "aws")]
+async fn update_user_from_id_token(aws: &AWS, id_token: &IdTokenClaims) {
+    aws.dynamodb
+        .put_item()
+        .table_name(aws.users_table_name.as_str())
+        .item("user_id", AttributeValue::S(id_token.sub.to_string()))
+        .item("email", AttributeValue::S(id_token.email.to_string()))
+        .send()
+        .await
+        .unwrap();
+}
+
 async fn auth_callback(
     aws: &AWS,
     http_request: &ApiGatewayV2httpRequest,
 ) -> ApiGatewayV2httpResponse {
     let query_string_parameters = &http_request.query_string_parameters;
-    let code = query_string_parameters.first("code").unwrap();
-    let tokens = get_tokens_from_authorization_code(aws, code).await;
     let state = query_string_parameters.first("state").unwrap_or("{}");
     let state: AuthState = serde_json::from_str(state).unwrap();
     dbg!(&state);
+    let code = query_string_parameters.first("code").unwrap();
 
     if let Some(connection_id) = state.connection_id {
         post_to_connection(
             aws,
             &connection_id,
-            &WebsocketServerMessage::LoginCredentials {
-                credentials: Credentials {
-                    id_token: tokens.id_token.clone(),
-                    access_token: tokens.access_token.clone(),
-                    refresh_token: tokens.refresh_token.clone(),
+            &WebsocketServerMessage::AuthCodeUrl {
+                url: {
+                    let mut url = get_api_domain().join("/auth/callback").unwrap();
+                    url.query_pairs_mut().append_pair("code", code);
+                    url.to_string()
                 },
             },
         )
         .await;
+
+        let headers = redirect_to_root_domain_header_map();
+
+        ApiGatewayV2httpResponse {
+            status_code: 302,
+            headers,
+            ..Default::default()
+        }
+    } else {
+        let tokens = get_tokens_from_authorization_code(aws, code).await;
+
+        let id_token = get_id_token_claims(aws, &tokens.id_token).unwrap();
+        dbg!(&id_token);
+        update_user_from_id_token(aws, &id_token).await;
+
+        auth_http_response(
+            aws,
+            &tokens.access_token,
+            tokens.expires_in,
+            &tokens.refresh_token,
+            get_refresh_token_expires_in(aws),
+        )
     }
-    auth_http_response(
-        &tokens.access_token,
-        tokens.expires_in,
-        &tokens.refresh_token,
-        get_refresh_token_expires_in(aws),
-    )
 }
 
-#[cfg(feature = "aws")]
-async fn auth_logout(_http_request: &ApiGatewayV2httpRequest) -> ApiGatewayV2httpResponse {
-    auth_http_response("", 0, "", 0)
+async fn auth_logout(
+    aws: &AWS,
+    _http_request: &ApiGatewayV2httpRequest,
+) -> ApiGatewayV2httpResponse {
+    auth_http_response(aws, "", 0, "", 0)
 }
 
-#[cfg(feature = "aws")]
-async fn auth_refresh(_http_request: &ApiGatewayV2httpRequest) -> ApiGatewayV2httpResponse {
+fn get_refresh_token_from_http_request(
+    aws: &AWS,
+    http_request: &ApiGatewayV2httpRequest,
+) -> Option<String> {
+    let cookies = if let Some(cookies) = http_request.cookies.as_ref() {
+        cookies
+    } else {
+        return None;
+    };
+
+    for cookie in cookies {
+        let cookie = if let Ok(cookie) = cookie::Cookie::parse(cookie) {
+            cookie
+        } else {
+            continue;
+        };
+
+        if cookie.name() == "refreshToken" {
+            return Some(cookie.value().to_string());
+        }
+    }
+
+    None
+}
+
+#[derive(Deserialize)]
+struct RefreshedTokens {
+    access_token: String,
+    expires_in: i64,
+    id_token: String,
+    token_type: String,
+}
+
+async fn auth_refresh(
+    aws: &AWS,
+    http_request: &ApiGatewayV2httpRequest,
+) -> ApiGatewayV2httpResponse {
+    let refresh_token =
+        if let Some(refresh_token) = get_refresh_token_from_http_request(aws, http_request) {
+            refresh_token
+        } else {
+            return bad_request();
+        };
+
+    // Decode the refresh token to get the username
+
+    // Make the POST request to exchange the refresh token for tokens
+    let form = {
+        let mut payload = HashMap::new();
+        payload.insert("grant_type", "refresh_token".to_string());
+        payload.insert("client_id", aws.user_pool_client_id.to_string());
+        payload.insert(
+            "client_secret",
+            aws.user_pool_client
+                .client_secret
+                .as_ref()
+                .unwrap()
+                .to_string(),
+        );
+        payload.insert("refresh_token", refresh_token);
+        payload
+    };
+
+    // Make the POST request to exchange the authorization code for tokens
+    let response = aws
+        .reqwest
+        .post(get_token_endpoint_url().as_str())
+        .form(&form)
+        .send()
+        .await
+        .unwrap();
+    let tokens = response.json::<RefreshedTokens>().await.unwrap();
+
+    let id_token = get_id_token_claims(aws, &tokens.id_token).unwrap();
+    update_user_from_id_token(aws, &id_token).await;
+
+    let cookies = [access_token_cookie(&tokens.access_token, tokens.expires_in)].to_vec();
+
     ApiGatewayV2httpResponse {
         status_code: 200,
+        cookies,
+        body: Some(Body::Text(json!({}).to_string())),
         ..Default::default()
     }
 }
 
-#[cfg(feature = "aws")]
-fn method_not_allowed() -> ApiGatewayV2httpResponse {
+fn bad_request() -> ApiGatewayV2httpResponse {
     ApiGatewayV2httpResponse {
-        status_code: 405,
+        status_code: 400,
         ..Default::default()
     }
 }
 
-#[cfg(feature = "aws")]
 fn not_found() -> ApiGatewayV2httpResponse {
     ApiGatewayV2httpResponse {
         status_code: 404,
@@ -301,7 +335,13 @@ fn not_found() -> ApiGatewayV2httpResponse {
     }
 }
 
-#[cfg(feature = "aws")]
+fn method_not_allowed() -> ApiGatewayV2httpResponse {
+    ApiGatewayV2httpResponse {
+        status_code: 405,
+        ..Default::default()
+    }
+}
+
 async fn handle_http_request(
     aws: &AWS,
     http_request: &ApiGatewayV2httpRequest,
@@ -317,18 +357,17 @@ async fn handle_http_request(
             _ => method_not_allowed(),
         },
         "/auth/logout" => match *method {
-            Method::POST => auth_logout(http_request).await,
+            Method::POST => auth_logout(aws, http_request).await,
             _ => method_not_allowed(),
         },
         "/auth/refresh" => match *method {
-            Method::POST => auth_refresh(http_request).await,
+            Method::POST => auth_refresh(aws, http_request).await,
             _ => method_not_allowed(),
         },
         _ => not_found(),
     }
 }
 
-#[cfg(feature = "aws")]
 fn get_stack_output(stack: &Stack, output_key: &str) -> String {
     stack
         .outputs
@@ -343,8 +382,7 @@ fn get_stack_output(stack: &Stack, output_key: &str) -> String {
         .clone()
 }
 
-#[cfg(feature = "aws")]
-pub async fn get_aws() -> AWS {
+async fn get_aws() -> AWS {
     let config = aws_config::load_from_env().await;
     let cloudformation = cloudformation::Client::new(&config);
     let stack = cloudformation
@@ -366,9 +404,10 @@ pub async fn get_aws() -> AWS {
         Url::parse(get_stack_output(&stack, "WebsocketEndpointUrl").as_str()).unwrap();
     let function_cloudwatch_log_group = get_stack_output(&stack, "FunctionCloudwatchLogGroup");
     let connections_table_name = get_stack_output(&stack, "ConnectionsTableName");
+    let users_table_name = get_stack_output(&stack, "UsersTableName");
 
-    let cognitoidentityprovider = cognitoidentityprovider::Client::new(&config);
-    let user_pool_client = cognitoidentityprovider
+    let cognito_identity_provider = cognitoidentityprovider::Client::new(&config);
+    let user_pool_client = cognito_identity_provider
         .describe_user_pool_client()
         .set_user_pool_id(Some(user_pool_id.to_string()))
         .set_client_id(Some(user_pool_client_id.to_string()))
@@ -419,22 +458,23 @@ pub async fn get_aws() -> AWS {
         user_pool_client_id,
         function_cloudwatch_log_group,
         connections_table_name,
+        users_table_name,
     }
 }
 
-#[cfg(feature = "aws")]
-pub struct AWS {
+struct AWS {
     reqwest: reqwest::Client,
     dynamodb: dynamodb::Client,
     s3: s3::Client,
     user_pool_client: UserPoolClientType,
     jwks: HashMap<String, DecodingKey>,
     api_gateway_management: apigatewaymanagement::Client,
-    pub s3_bucket: String,
+    s3_bucket: String,
     user_pool_client_id: String,
     #[allow(dead_code)] // TODO
     function_cloudwatch_log_group: String,
     connections_table_name: String,
+    users_table_name: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -442,7 +482,6 @@ struct AuthState {
     connection_id: Option<String>,
 }
 
-#[cfg(feature = "aws")]
 async fn login_request(aws: &AWS, connection_id: &str) {
     let mut login_url = get_auth_domain().join("/oauth2/authorize").unwrap();
     login_url
@@ -472,7 +511,6 @@ async fn login_request(aws: &AWS, connection_id: &str) {
     .await;
 }
 
-#[cfg(feature = "aws")]
 async fn post_to_connection(aws: &AWS, connection_id: &str, data: &WebsocketServerMessage) {
     aws.api_gateway_management
         .post_to_connection()
@@ -483,7 +521,6 @@ async fn post_to_connection(aws: &AWS, connection_id: &str, data: &WebsocketServ
         .unwrap();
 }
 
-#[cfg(feature = "aws")]
 async fn handle_websocket_message(aws: &AWS, connection_id: &str, body: &str) {
     match (
         serde_json::from_str::<WebsocketClientMessage>(body),
@@ -493,24 +530,77 @@ async fn handle_websocket_message(aws: &AWS, connection_id: &str, body: &str) {
             login_request(aws, connection_id).await;
         }
         (
-            Ok(WebsocketClientMessage::GeneratePresignedUrl { object_path }),
+            Ok(WebsocketClientMessage::Request {
+                request_id,
+                request: WebsocketClientRequest::GetPresignedUrl { object_path },
+            }),
             Connection::Authorized { .. },
         ) => {
             let presigned_url = generate_presigned_url(aws, &object_path).await;
             post_to_connection(
                 aws,
                 connection_id,
-                &WebsocketServerMessage::PresignedUrl {
-                    url: presigned_url.url.to_string(),
+                &WebsocketServerMessage::Response {
+                    request_id,
+                    response: WebsocketServerResponse::GetPresignedUrl {
+                        url: presigned_url.url.to_string(),
+                    },
+                },
+            )
+            .await;
+        }
+        (
+            Ok(WebsocketClientMessage::Request {
+                request_id,
+                request: WebsocketClientRequest::GetUser {},
+            }),
+            Connection::Authorized { user_id },
+        ) => {
+            let mut user = aws
+                .dynamodb
+                .get_item()
+                .table_name(aws.users_table_name.as_str())
+                .key("user_id", AttributeValue::S(user_id.to_string()))
+                .send()
+                .await
+                .unwrap()
+                .item
+                .unwrap();
+            let email = if let Some(AttributeValue::S(email)) = user.remove("email") {
+                email
+            } else {
+                panic!("Expected email email address");
+            };
+            post_to_connection(
+                aws,
+                connection_id,
+                &WebsocketServerMessage::Response {
+                    request_id,
+                    response: WebsocketServerResponse::GetUser {
+                        user: User {
+                            user_id: user_id.to_string(),
+                            email,
+                        },
+                    },
+                },
+            )
+            .await;
+        }
+        (Ok(WebsocketClientMessage::Request { request_id, .. }), Connection::Unauthorized) => {
+            post_to_connection(
+                aws,
+                connection_id,
+                &WebsocketServerMessage::Response {
+                    request_id,
+                    response: WebsocketServerResponse::Error {
+                        error: WebsocketServerError::Unauthorized,
+                    },
                 },
             )
             .await;
         }
         (Err(err), _) => {
             println!("Error deserializing websocket message: {:?}", err);
-        }
-        (Ok(message), Connection::Unauthorized) => {
-            println!("Unauthorized websocket message: {:?}", message);
         }
     }
 }
@@ -520,74 +610,189 @@ async fn handle_websocket_message(aws: &AWS, connection_id: &str, body: &str) {
 struct AccessTokenClaims {
     auth_time: i64,
     client_id: String,
-    event_id: String,
     exp: i64,
     iat: i64,
     iss: String,
     jti: String,
     origin_jti: String,
     scope: String,
-    sub: String,
+    pub sub: String,
     token_use: String,
     username: String,
     version: i64,
 }
 
-#[cfg(feature = "aws")]
-enum AccessTokenClaimsError {
+#[derive(Deserialize, Debug)]
+#[allow(dead_code)]
+struct IdTokenClaims {
+    at_hash: String,
+    aud: String,
+    auth_time: i64,
+    #[serde(rename = "cognito:username")]
+    cognito_username: String,
+    email: String,
+    email_verified: bool,
+    exp: i64,
+    iat: i64,
+    iss: String,
+    jti: String,
+    origin_jti: String,
+    sub: String,
+    token_use: String,
+}
+
+#[derive(Debug)]
+enum TokenClaimsError {
     NoAuthorizationHeader,
     InvalidAuthorizationHeader,
     InvalidKid,
     JwtDecodeError,
 }
 
-#[cfg(feature = "aws")]
+struct Cookies {
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+}
+
+fn get_cookies(headers: &HeaderMap) -> Cookies {
+    let cookies = if let Some(cookies) = headers.get("cookie") {
+        cookies
+    } else {
+        return Cookies {
+            access_token: None,
+            refresh_token: None,
+        };
+    };
+
+    let mut access_token = None;
+    let mut refresh_token = None;
+
+    for cookie in cookie::Cookie::split_parse(cookies.to_str().unwrap()) {
+        let cookie = if let Ok(cookie) = cookie {
+            cookie
+        } else {
+            println!("Error parsing cookie");
+            continue;
+        };
+        if cookie.name() == "accessToken" {
+            access_token = Some(cookie.value().to_string());
+        } else if cookie.name() == "refreshToken" {
+            refresh_token = Some(cookie.value().to_string());
+        }
+    }
+
+    Cookies {
+        access_token,
+        refresh_token,
+    }
+}
+
 fn get_access_token_claims(
     aws: &AWS,
     headers: &HeaderMap,
-) -> Result<AccessTokenClaims, AccessTokenClaimsError> {
-    // Get the `sub` claim from the JWT token passed in the `Authorization` header
-    let mut authorization_header_parts = headers
-        .get("authorization")
-        .ok_or(AccessTokenClaimsError::NoAuthorizationHeader)?
-        .to_str()
-        .map_err(|_| AccessTokenClaimsError::InvalidAuthorizationHeader)?
-        .split_whitespace();
-    let authorization_header_parts = (
-        authorization_header_parts.next(), // Scheme
-        authorization_header_parts.next(), // Parameter
-        authorization_header_parts.next(), // None
-    );
+) -> Result<AccessTokenClaims, TokenClaimsError> {
+    // Get the accessToken cookie
 
-    let jwt_token = match authorization_header_parts {
-        (Some("Bearer"), Some(jwt_token), None) => jwt_token,
-        _ => return Err(AccessTokenClaimsError::InvalidAuthorizationHeader),
-    };
+    for cookie in cookie::Cookie::split_parse(
+        headers
+            .get("cookie")
+            .ok_or(TokenClaimsError::NoAuthorizationHeader)?
+            .to_str()
+            .map_err(|_| TokenClaimsError::InvalidAuthorizationHeader)?,
+    ) {
+        let cookie = if let Ok(cookie) = cookie {
+            cookie
+        } else {
+            println!("Error parsing cookie");
+            continue;
+        };
+        if cookie.name() == "accessToken" {
+            let jwt_token = cookie.value();
+            return Ok(jwt::decode::<AccessTokenClaims>(
+                jwt_token,
+                get_decoding_key(aws, jwt_token)?,
+                &Validation::new(RS256),
+            )
+            .map_err(|err| {
+                println!("Error decoding JWT token: {:?}", err);
+                TokenClaimsError::JwtDecodeError
+            })?
+            .claims);
+        }
+    }
 
+    return Err(TokenClaimsError::NoAuthorizationHeader);
+}
+
+// fn get_access_token_claims(
+//     aws: &AWS,
+//     headers: &HeaderMap,
+// ) -> Result<AccessTokenClaims, TokenClaimsError> {
+//     // Get the `sub` claim from the JWT token passed in the `Authorization` header
+//     let mut authorization_header_parts = headers
+//         .get("authorization")
+//         .ok_or(TokenClaimsError::NoAuthorizationHeader)?
+//         .to_str()
+//         .map_err(|_| TokenClaimsError::InvalidAuthorizationHeader)?
+//         .split_whitespace();
+//     let authorization_header_parts = (
+//         authorization_header_parts.next(), // Scheme
+//         authorization_header_parts.next(), // Parameter
+//         authorization_header_parts.next(), // None
+//     );
+
+//     let jwt_token = match authorization_header_parts {
+//         (Some("Bearer"), Some(jwt_token), None) => jwt_token,
+//         _ => return Err(TokenClaimsError::InvalidAuthorizationHeader),
+//     };
+
+//     Ok(jwt::decode::<AccessTokenClaims>(
+//         jwt_token,
+//         get_decoding_key(aws, jwt_token)?,
+//         &Validation::new(RS256),
+//     )
+//     .map_err(|err| {
+//         println!("Error decoding JWT token: {:?}", err);
+//         TokenClaimsError::JwtDecodeError
+//     })?
+//     .claims)
+// }
+
+fn get_decoding_key<'a>(
+    aws: &'a AWS,
+    jwt_token: &str,
+) -> Result<&'a DecodingKey, TokenClaimsError> {
     let kid = jwt::decode_header(jwt_token)
-        .map_err(|_| AccessTokenClaimsError::JwtDecodeError)?
+        .map_err(|err| {
+            println!("Error decoding JWT token header: {:?}", err);
+            TokenClaimsError::JwtDecodeError
+        })?
         .kid
-        .ok_or(AccessTokenClaimsError::InvalidKid)?;
+        .ok_or(TokenClaimsError::InvalidKid)?;
 
-    let decoding_key = aws
-        .jwks
-        .get(&kid)
-        .ok_or(AccessTokenClaimsError::InvalidKid)?;
+    Ok(aws.jwks.get(&kid).ok_or(TokenClaimsError::InvalidKid)?)
+}
 
+fn get_id_token_claims(aws: &AWS, jwt_token: &str) -> Result<IdTokenClaims, TokenClaimsError> {
     Ok(
-        jwt::decode::<AccessTokenClaims>(jwt_token, decoding_key, &Validation::new(RS256))
-            .map_err(|_| AccessTokenClaimsError::JwtDecodeError)?
-            .claims,
+        jwt::decode::<IdTokenClaims>(jwt_token, get_decoding_key(aws, jwt_token)?, &{
+            let mut validation = Validation::new(RS256);
+            validation.set_audience(&[aws.user_pool_client_id.as_str()]);
+            validation
+        })
+        .map_err(|err| {
+            println!("Error decoding JWT token: {:?}", err);
+            TokenClaimsError::JwtDecodeError
+        })?
+        .claims,
     )
 }
 
-#[cfg(feature = "aws")]
 enum Connection {
     Authorized { user_id: String },
     Unauthorized,
 }
 
-#[cfg(feature = "aws")]
 async fn create_connection(aws: &AWS, connection_id: &str, connection: &Connection) {
     match connection {
         Connection::Authorized { user_id } => {
@@ -607,7 +812,6 @@ async fn create_connection(aws: &AWS, connection_id: &str, connection: &Connecti
     }
 }
 
-#[cfg(feature = "aws")]
 async fn delete_connection(aws: &AWS, connection_id: &str) -> bool {
     aws.dynamodb
         .delete_item()
@@ -621,7 +825,6 @@ async fn delete_connection(aws: &AWS, connection_id: &str) -> bool {
         .is_ok()
 }
 
-#[cfg(feature = "aws")]
 async fn get_connection(aws: &AWS, connection_id: &str) -> Connection {
     let mut item: HashMap<String, AttributeValue> = aws
         .dynamodb
@@ -643,7 +846,6 @@ async fn get_connection(aws: &AWS, connection_id: &str) -> Connection {
     }
 }
 
-#[cfg(feature = "aws")]
 async fn handle_websocket_connect(aws: &AWS, connection_id: &str, headers: &HeaderMap) {
     if let Ok(access_token_claims) = get_access_token_claims(aws, headers) {
         dbg!(&access_token_claims);
@@ -658,12 +860,10 @@ async fn handle_websocket_connect(aws: &AWS, connection_id: &str, headers: &Head
     }
 }
 
-#[cfg(feature = "aws")]
 async fn handle_websocket_disconnect(aws: &AWS, connection_id: &str) {
     delete_connection(aws, connection_id).await;
 }
 
-#[cfg(feature = "aws")]
 async fn handle_lambda_event(aws: &AWS, event: LambdaEvent<Value>) -> Result<Value, Error> {
     let (event, _context) = event.into_parts();
 
@@ -707,14 +907,12 @@ async fn handle_lambda_event(aws: &AWS, event: LambdaEvent<Value>) -> Result<Val
     }
 }
 
-#[cfg(feature = "aws")]
 struct PresignedUrl {
     url: Uri,
     #[allow(dead_code)]
     headers: HeaderMap,
 }
 
-#[cfg(feature = "aws")]
 async fn generate_presigned_url(aws: &AWS, object_path: &String) -> PresignedUrl {
     let presigned_url: PresignedRequest = aws
         .s3
@@ -730,183 +928,9 @@ async fn generate_presigned_url(aws: &AWS, object_path: &String) -> PresignedUrl
     };
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-enum GetCredentialsError {
-    NoCredentials,
-    InvalidCredentials,
-}
+#[tokio::main]
+async fn main() {
+    std::env::set_var("RUST_BACKTRACE", "full");
 
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-async fn get_credentials() -> Result<Credentials, GetCredentialsError> {
-    let mut credentials_path = dirs::config_dir().ok_or(GetCredentialsError::NoCredentials)?;
-    credentials_path.push("unet");
-    credentials_path.push("credentials.json");
-
-    let credentials_str = read_to_string(credentials_path)
-        .await
-        .map_err(|_| GetCredentialsError::NoCredentials)?;
-
-    serde_json::from_str::<Credentials>(&credentials_str)
-        .map_err(|_| GetCredentialsError::InvalidCredentials)
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-async fn make_connection() -> WebSocketStream<MaybeTlsStream<TcpStream>> {
-    let websocket_domain = get_websocket_domain();
-
-    let request_builder = Request::builder()
-        .uri(websocket_domain.as_str())
-        .header("Connection", "Upgrade")
-        .header("Upgrade", "websocket")
-        .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
-        .header("Sec-WebSocket-Version", "13")
-        .header("Host", websocket_domain.host_str().unwrap());
-
-    let request_builder = match get_credentials().await {
-        Ok(credentials) => request_builder.header(
-            "Authorization",
-            format!("Bearer {}", credentials.access_token),
-        ),
-        Err(_) => request_builder,
-    };
-
-    let request = request_builder.body(()).unwrap();
-
-    let (ws_stream, _) = connect_async(request).await.unwrap();
-
-    ws_stream
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-enum ClientConnection {
-    Open {
-        write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
-        close_tx: oneshot::Sender<()>,
-    },
-    Closed,
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-async fn close_client_connection(connection: &mut ClientConnection) {
-    if let ClientConnection::Open {
-        mut write,
-        close_tx,
-    } = replace(connection, ClientConnection::Closed)
-    {
-        write.close().await.unwrap();
-        close_tx.send(()).unwrap();
-    }
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-async fn write_to_client_connection(
-    connection: &mut ClientConnection,
-    message: &WebsocketClientMessage,
-) {
-    match connection {
-        ClientConnection::Open { write, .. } => {
-            write
-                .send(Message::Text(serde_json::to_string(message).unwrap()))
-                .await
-                .unwrap();
-        }
-        ClientConnection::Closed => {}
-    }
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-async fn handle_client_message(connection: &mut ClientConnection, message: &str) {
-    // Decode the message as a WebsocketServerMessage
-    let message: WebsocketServerMessage = serde_json::from_str(message).unwrap();
-    match message {
-        WebsocketServerMessage::LoginUrl { url } => {
-            println!("Please login with this URL:\n{}", url);
-        }
-        WebsocketServerMessage::LoginCredentials { credentials } => {
-            // Store the credentials
-            let config_dir = dirs::config_dir().unwrap();
-
-            match tokio::fs::DirBuilder::new()
-                .recursive(true)
-                .create(&config_dir)
-                .await
-            {
-                Ok(_) => {}
-                Err(e) => {
-                    if e.kind() == std::io::ErrorKind::AlreadyExists {
-                        // The directory already exists, so we can continue
-                    } else {
-                        panic!("Failed to create directory: {:?}", e);
-                    }
-                }
-            };
-
-            let unet_config_dir = config_dir.join("unet");
-
-            match tokio::fs::DirBuilder::new()
-                .mode(0o700)
-                .create(&unet_config_dir)
-                .await
-            {
-                Ok(_) => {}
-                Err(e) => {
-                    if e.kind() == std::io::ErrorKind::AlreadyExists {
-                        // The directory already exists, so we can continue
-                    } else {
-                        panic!("Failed to create directory: {:?}", e);
-                    }
-                }
-            }
-
-            let credentials_path = unet_config_dir.join("credentials.json");
-            let credentials = serde_json::to_string_pretty(&credentials).unwrap();
-            tokio::fs::write(credentials_path, credentials)
-                .await
-                .unwrap();
-
-            close_client_connection(connection).await;
-        }
-        WebsocketServerMessage::PresignedUrl { url } => {
-            println!("Presigned URL: {}", url);
-        }
-    };
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-pub async fn login() {
-    let ws_stream = make_connection().await;
-    let (write, mut read) = ws_stream.split();
-    let (close_tx, mut close_rx) = oneshot::channel::<()>();
-    let mut connection = ClientConnection::Open { write, close_tx };
-
-    write_to_client_connection(&mut connection, &WebsocketClientMessage::LoginRequest {}).await;
-
-    loop {
-        select! {
-            _ = &mut close_rx => {
-                break;
-            }
-            message = read.next() => {
-                match message {
-                    Some(Ok(Message::Text(message))) => {
-                        handle_client_message(&mut connection, &message).await;
-                    }
-                    Some(Ok(message)) => {
-                        println!("Received message: {:?}", message);
-                    }
-                    Some(Err(err)) => {
-                        println!("Error reading message: {:?}", err);
-                    }
-                    None => {
-                        break;
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-pub async fn logout() {
-    println!("Logout of unet");
+    lambda_main().await;
 }
