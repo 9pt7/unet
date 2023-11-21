@@ -1,0 +1,528 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+  HostedZoneId:
+    Description: The hosted zone ID for this stack used by ther RootDomain and AuthDomain
+    Type: String
+  RootDomain:
+    Description: The root domain name
+    Type: String
+  AuthDomain:
+    Description: The auth domain name for the Cognito User Pool
+    Type: String
+  ApiDomain:
+    Description: The API domain name for the HTTP API
+    Type: String
+  WebSocketDomain:
+    Description: The WebSocket domain name
+    Type: String
+
+Resources:
+  Function:
+    Type: AWS::Serverless::Function
+    Properties:
+      MemorySize: 128
+      Architectures: ["x86_64"]
+      Description: !Ref AWS::StackName
+      Handler: rust.bootstrap
+      Runtime: provided.al2
+      Timeout: 5
+      CodeUri: dist/lambda/bootstrap
+      Role: !GetAtt FunctionExecutionRole.Arn
+
+  FunctionExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CognitoAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cognito-idp:DescribeUserPoolClient
+                Resource: !GetAtt UserPool.Arn
+        - PolicyName: WebSocketAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - execute-api:ManageConnections
+                Resource: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*"
+        - PolicyName: CloudformationDescribeStack
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
+        - PolicyName: ConnectionsTableAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt ConnectionsTable.Arn
+        - PolicyName: DevicesTableAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt DevicesTable.Arn
+        - PolicyName: UsersTableAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt UsersTable.Arn
+
+
+  WebSocketApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Ref WebSocketDomain
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: "$request.body.action"
+
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: $connect
+      AuthorizationType: NONE
+      OperationName: ConnectRoute
+      Target: !Join
+        - '/'
+        - - 'integrations'
+          - !Ref ConnectInteg
+
+  ConnectInteg:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      Description: Connect Integration
+      IntegrationType: AWS_PROXY
+      IntegrationUri:
+        Fn::Sub:
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Function.Arn}/invocations
+
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: $disconnect
+      AuthorizationType: NONE
+      OperationName: DisconnectRoute
+      Target: !Join
+        - '/'
+        - - 'integrations'
+          - !Ref DisconnectInteg
+
+  DisconnectInteg:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      Description: Disconnect Integration
+      IntegrationType: AWS_PROXY
+      IntegrationUri:
+        Fn::Sub:
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Function.Arn}/invocations
+
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: $default
+      AuthorizationType: NONE
+      OperationName: DefaultRoute
+      Target: !Join
+        - '/'
+        - - 'integrations'
+          - !Ref DefaultInteg
+
+  DefaultInteg:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      Description: Default Integration
+      IntegrationType: AWS_PROXY
+      IntegrationUri:
+        Fn::Sub:
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Function.Arn}/invocations
+
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Ref ApiDomain
+      ProtocolType: HTTP
+      Target: !GetAtt Function.Arn
+      CorsConfiguration:
+        AllowMethods:
+          - GET
+          - POST
+        AllowHeaders:
+          - '*'
+        AllowOrigins:
+          - !Sub "https://${RootDomain}"
+        AllowCredentials: true
+
+
+  Deployment:
+    Type: AWS::ApiGatewayV2::Deployment
+    DependsOn:
+    - ConnectRoute
+    - DisconnectRoute
+    - DefaultRoute
+    Properties:
+      ApiId: !Ref WebSocketApi
+
+  Stage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      StageName: $default
+      Description: Default Stage
+      DeploymentId: !Ref Deployment
+      ApiId: !Ref WebSocketApi
+
+  WebSocketCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref WebSocketDomain
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref WebSocketDomain
+          HostedZoneId: !Ref HostedZoneId
+
+  WebSocketDomainName:
+    Type: AWS::ApiGatewayV2::DomainName
+    Properties:
+      DomainName: !Ref WebSocketDomain
+      DomainNameConfigurations:
+        - CertificateArn: !Ref WebSocketCertificate
+          EndpointType: REGIONAL
+          SecurityPolicy: TLS_1_2
+
+  WebSocketApiMapping:
+    Type: AWS::ApiGatewayV2::ApiMapping
+    Properties:
+      ApiId: !Ref WebSocketApi
+      DomainName: !Ref WebSocketDomainName
+      Stage: !Ref Stage
+
+  WebSocketRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref WebSocketDomain
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt WebSocketDomainName.RegionalDomainName
+        HostedZoneId: !GetAtt WebSocketDomainName.RegionalHostedZoneId
+
+  ApiCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref ApiDomain
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref ApiDomain
+          HostedZoneId: !Ref HostedZoneId
+
+  ApiDomainName:
+    Type: AWS::ApiGatewayV2::DomainName
+    Properties:
+      DomainName: !Ref ApiDomain
+      DomainNameConfigurations:
+        - CertificateArn: !Ref ApiCertificate
+          EndpointType: REGIONAL
+          SecurityPolicy: TLS_1_2
+
+  HttpApiMapping:
+    Type: AWS::ApiGatewayV2::ApiMapping
+    Properties:
+      ApiId: !Ref HttpApi
+      DomainName: !Ref ApiDomainName
+      Stage: $default
+
+  ApiRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref ApiDomain
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt ApiDomainName.RegionalDomainName
+        HostedZoneId: !GetAtt ApiDomainName.RegionalHostedZoneId
+
+  ApiGatewayInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref Function
+      Principal: apigateway.amazonaws.com
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref AWS::StackName
+
+  CloudFrontOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${S3Bucket}"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  RootRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref RootDomain
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+
+  RootCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref RootDomain
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref RootDomain
+          HostedZoneId: !Ref HostedZoneId
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: True
+        Comment: !Ref AWS::StackName
+        Origins:
+          - DomainName: !GetAtt S3Bucket.DomainName
+            Id: S3BucketOrigin
+            OriginPath: '/www'
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+            OriginAccessControlId: !Ref CloudFrontOriginAccessControl
+
+        DefaultRootObject: index.html
+        DefaultCacheBehavior:
+          TargetOriginId: S3BucketOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          # cache policy: CachingDisabled
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+        CacheBehaviors:
+          - PathPattern: '/static/*'
+            TargetOriginId: S3BucketOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            # cache policy: CachingOptimized
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+        Aliases:
+          - !Ref RootDomain
+        ViewerCertificate:
+          AcmCertificateArn: !Ref RootCertificate
+          SslSupportMethod: sni-only
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: false
+          RequireLowercase: false
+          RequireNumbers: false
+          RequireSymbols: false
+
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFront
+            Effect: Allow
+            Principal:
+              Service: "cloudfront.amazonaws.com"
+            Action:
+              - s3:GetObject
+            Resource: !Sub 'arn:aws:s3:::${S3Bucket}/www/*'
+            Condition:
+              StringEquals:
+                'AWS:SourceArn': !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}'
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId:
+        Ref: UserPool
+      GenerateSecret: True
+      CallbackURLs:
+        - !Sub 'https://${ApiDomain}/auth/callback'
+      SupportedIdentityProviders:
+        - COGNITO
+      AllowedOAuthScopes:
+        - openid
+        - email
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthFlowsUserPoolClient: true
+
+  AuthCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref AuthDomain
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref AuthDomain
+          HostedZoneId: !Ref HostedZoneId
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref AuthDomain
+      UserPoolId:
+        Ref: UserPool
+      CustomDomainConfig:
+        CertificateArn: !Ref AuthCertificate
+    DependsOn:
+      - RootRecordSet
+
+  AuthRecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref AuthDomain
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt UserPoolDomain.CloudFrontDistribution
+        HostedZoneId: Z2FDTNDATAQYW2
+
+  ConnectionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}.ConnectionsTable"
+      AttributeDefinitions:
+        - AttributeName: connection_id
+          AttributeType: S
+        - AttributeName: user_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: connection_id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      GlobalSecondaryIndexes:
+        - IndexName: user_id
+          KeySchema:
+            - AttributeName: user_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+          ProvisionedThroughput:
+            ReadCapacityUnits: 5
+            WriteCapacityUnits: 5
+
+  DevicesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}.DevicesTable"
+      AttributeDefinitions:
+        - AttributeName: machine_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: machine_id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}.UsersTable"
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+Outputs:
+  S3Bucket:
+    Description: "The S3 bucket for the CloudFront distribution"
+    Value: !Ref S3Bucket
+  UserPoolId:
+    Description: "The Cognito User Pool ID"
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Description: "The Cognito User Pool Client ID"
+    Value: !Ref UserPoolClient
+  JwksUrl:
+    Description: "The JWKS URL for the Cognito User Pool"
+    Value: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}/.well-known/jwks.json"
+  FunctionCloudwatchLogGroup:
+    Description: "The CloudWatch log group for the Lambda function"
+    Value: !Sub "/aws/lambda/${Function}"
+  WebsocketEndpointUrl:
+    Description: "The WebSocket endpoint URL"
+    Value: !Sub "https://${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/$default"
+  ConnectionsTableName:
+    Description: "The DynamoDB table name for the WebSocket connections"
+    Value: !Ref ConnectionsTable
+  DevicesTableName:
+    Description: "The DynamoDB table name for the devices"
+    Value: !Ref DevicesTable
+  UsersTableName:
+    Description: "The DynamoDB table name for the users"
+    Value: !Ref UsersTable
