@@ -5,6 +5,8 @@ unet
 
 - [Features](#features)
 - [Installation](#installation)
+- [CLI](#cli)
+- [API](#api)
 - [Development](#development)
 - [License (MIT)](#license)
 
@@ -16,6 +18,10 @@ unet
 Users control how their data is shared. It is free for anyone to sign up to unet, so it is important that permissions are properly managed.
 
 # Installation
+
+# CLI
+
+# API
 
 # Development
 
