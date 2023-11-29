@@ -4,30 +4,14 @@
 
 This repository hosts the client-side source code for [unet], a scalable network solution written in Rust. It allows many machines to function as a single virtual machine and supports millions of simultaneous client connections.
 
-[unet]: https://unet.tech/
-
-**Note: This README is intended for _users_ of the unet client.**
-For contributions to the client's codebase, please refer to [CONTRIBUTING.md](CONTRIBUTING.md).
-
-<details>
-<summary>Table of Content</summary>
-
-- [Getting Started](#getting-started)
+- [Quick Start](https://unet.tech/docs/quick-start.html)
 - [Installation and Setup](#installation-and-setup)
 - [Building the Client](#building-the-client)
 - [Configuration](#configuration)
 - [Using the Client](#using-the-client)
 - [Support and Assistance](#support-and-assistance)
-- [Contributing](#contributing)
+- [CONTRIBUTING.md](CONTRIBUTING.md)
 - [License](#license)
-
-</details>
-
-## Getting Started
-
-Begin by reading the [Setup Guide] from the unet documentation.
-
-[Setup Guide]: https://unet.tech/docs/setup-guide.html
 
 ## Installation and Setup
 
